@@ -1,0 +1,900 @@
+
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua", true))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua", true))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua", true))()
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local Lighting = game:GetService("Lighting")
+
+-- Player and Character Variables
+local player = Players.LocalPlayer
+local character = nil
+local humanoidRootPart = nil
+local humanoid = nil
+
+-- Configuration Tables
+local FlyConfig = {
+    enabled = false,
+    speed = 200,
+    minSpeed = 25,
+    maxSpeed = 1000,
+    smoothness = 0.15,
+    autoRotate = true,
+    noclip = false,
+    boostMultiplier = 2.5
+}
+
+local MovementConfig = {
+    walkSpeed = 16,
+    jumpPower = 50,
+    jumpHeight = 7.2,
+    infiniteJump = false,
+    jumpBoost = false,
+    jumpBoostPower = 100,
+    noClip = false,
+    swim = false,
+    sit = false
+}
+
+local VisualConfig = {
+    fullbright = false,
+	Chams = false,
+	threedbox = false,
+    fog = true,
+    originalFogEnd = 100000,
+    originalFogStart = 0,
+    originalBrightness = 1,
+    originalAmbient = Color3.new(0, 0, 0)
+}
+
+
+local MiscConfig = {
+    godMode = false,
+    invisibility = false,
+    freezeCharacter = false,
+    clickTP = false,
+    autoRespawn = false
+}
+
+-- Component Variables
+local bodyVelocity = nil
+local bodyGyro = nil
+local connections = {}
+local originalValues = {}
+
+-- Input State
+local inputState = {
+    W = false, A = false, S = false, D = false,
+    Space = false, LeftShift = false, RightControl = false
+}
+
+-- Animation Variables
+local currentVelocity = Vector3.new()
+local targetVelocity = Vector3.new()
+
+-- Utility Functions
+local function safeDestroy(instance)
+    if instance and instance.Parent then
+        instance:Destroy()
+    end
+end
+
+local function getCharacterComponents()
+    character = player.Character
+    if character then
+        humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+        humanoid = character:FindFirstChildOfClass("Humanoid")
+        return humanoidRootPart and humanoid
+    end
+    return false
+end
+
+local function saveOriginalValues()
+    if humanoid then
+        originalValues.WalkSpeed = humanoid.WalkSpeed
+        originalValues.JumpPower = humanoid.JumpPower
+        originalValues.JumpHeight = humanoid.JumpHeight
+        originalValues.MaxHealth = humanoid.MaxHealth
+        originalValues.Health = humanoid.Health
+    end
+    
+    originalValues.FogEnd = Lighting.FogEnd
+    originalValues.FogStart = Lighting.FogStart
+    originalValues.Brightness = Lighting.Brightness
+    originalValues.Ambient = Lighting.Ambient
+end
+
+-- Movement Functions
+local function updateWalkSpeed(speed)
+    if humanoid then
+        humanoid.WalkSpeed = speed
+    end
+end
+
+local function updateJumpPower(power)
+    if humanoid then
+        humanoid.JumpPower = power
+        humanoid.JumpHeight = power * 0.36 -- Convert to JumpHeight
+    end
+end
+
+local function toggleInfiniteJump(enabled)
+    if connections.infiniteJump then
+        connections.infiniteJump:Disconnect()
+        connections.infiniteJump = nil
+    end
+    
+    if enabled and humanoid then
+        connections.infiniteJump = UIS.JumpRequest:Connect(function()
+            if humanoid then
+                humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+                humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end)
+    end
+end
+
+local function toggleNoclip(enabled)
+    if not character then return end
+    
+    if connections.noclip then
+        connections.noclip:Disconnect()
+        connections.noclip = nil
+    end
+    
+    for _, part in pairs(character:GetChildren()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = not enabled
+        end
+    end
+    
+    if enabled then
+        connections.noclip = RunService.Stepped:Connect(function()
+            if character then
+                for _, part in pairs(character:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    end
+end
+
+local function toggleGodMode(enabled)
+    if not humanoid then return end
+    
+    if connections.godMode then
+        connections.godMode:Disconnect()
+        connections.godMode = nil
+    end
+    
+    if enabled then
+        humanoid.MaxHealth = math.huge
+        humanoid.Health = math.huge
+        
+        connections.godMode = humanoid.HealthChanged:Connect(function()
+            if humanoid.Health < humanoid.MaxHealth then
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end)
+    else
+        humanoid.MaxHealth = originalValues.MaxHealth or 100
+        humanoid.Health = originalValues.Health or 100
+    end
+end
+
+local function toggleInvisibility(enabled)
+    if not character then return end
+    
+    for _, part in pairs(character:GetChildren()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            part.Transparency = enabled and 1 or 0
+        elseif part:IsA("Accessory") then
+            local handle = part:FindFirstChild("Handle")
+            if handle then
+                handle.Transparency = enabled and 1 or 0
+            end
+        end
+    end
+    
+    local head = character:FindFirstChild("Head")
+    if head then
+        local face = head:FindFirstChild("face")
+        if face then
+            face.Transparency = enabled and 1 or 0
+        end
+    end
+end
+
+local function toggleFullbright(enabled)
+    if enabled then
+        Lighting.Brightness = 2
+        Lighting.Ambient = Color3.new(1, 1, 1)
+        Lighting.FogEnd = 100000
+        Lighting.FogStart = 0
+    else
+        Lighting.Brightness = originalValues.Brightness or 1
+        Lighting.Ambient = originalValues.Ambient or Color3.new(0, 0, 0)
+        Lighting.FogEnd = originalValues.FogEnd or 100000
+        Lighting.FogStart = originalValues.FogStart or 0
+    end
+end
+
+local function toggleChams(enabled)
+    if enabled then
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Xcasqq/eso/main/escrot.lua", true))()
+    else
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Xcasqq/eso/main/escrotoff.lua", true))()
+    end
+end
+
+local function togglethreedbox(enabled)
+    if enabled then
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Xcasqq/roblox-open-source-scripts/refs/heads/main/3dbox.lua", true))()
+    else
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/Xcasqq/roblox-open-source-scripts/refs/heads/main/3dboxoff.lua", true))()
+    end
+end
+     
+
+local function toggleClickTP(enabled)
+    if connections.clickTP then
+        connections.clickTP:Disconnect()
+        connections.clickTP = nil
+    end
+    
+    if enabled then
+        connections.clickTP = player:GetMouse().Button1Down:Connect(function()
+            if UIS:IsKeyDown(Enum.KeyCode.RightControl) and humanoidRootPart then
+                local mouse = player:GetMouse()
+                if mouse.Hit then
+                    humanoidRootPart.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0, 5, 0))
+                end
+            end
+        end)
+    end
+end
+
+-- Flight Functions
+
+
+local function createFlyComponents()
+    if not humanoidRootPart then return false end
+    
+    bodyVelocity = Instance.new("BodyVelocity")
+    bodyVelocity.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+    bodyVelocity.Velocity = Vector3.new()
+    bodyVelocity.Parent = humanoidRootPart
+    
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    bodyGyro.P = 10000
+    bodyGyro.D = 1000
+    bodyGyro.CFrame = humanoidRootPart.CFrame
+    bodyGyro.Parent = humanoidRootPart
+    
+    return true
+end
+
+local function destroyFlyComponents()
+    safeDestroy(bodyVelocity)
+    safeDestroy(bodyGyro)
+    bodyVelocity = nil
+    bodyGyro = nil
+end
+
+local function startFlying()
+    if not getCharacterComponents() then return false end
+    if not createFlyComponents() then return false end
+    
+    pcall(function()
+        humanoid.PlatformStand = true
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Flying, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, false)
+    end)
+    
+    if FlyConfig.noclip then
+        toggleNoclip(true)
+    end
+    
+    currentVelocity = Vector3.new()
+    targetVelocity = Vector3.new()
+    
+    return true
+end
+
+local function stopFlying()
+    pcall(function()
+        if humanoid then
+            humanoid.PlatformStand = false
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Flying, false)
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+        end
+    end)
+    
+    if not MovementConfig.noClip then
+        toggleNoclip(false)
+    end
+    
+    destroyFlyComponents()
+end
+
+-- Create Window
+local Window = Fluent:CreateWindow({
+    Title = "Wind Force Client",
+    SubTitle = "By FsmXqash",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
+})
+
+
+
+
+-- Create Tabs
+local Tabs = {
+	Visual = Window:AddTab({ Title = "Visual", Icon = "" }),
+    Flight = Window:AddTab({ Title = "Flight System", Icon = "" }),
+    Movement = Window:AddTab({ Title = "Movement", Icon = "" }),
+    Character = Window:AddTab({ Title = "Character", Icon = "" }),
+    Teleport = Window:AddTab({ Title = "Teleport", Icon = "" }),
+    Settings = Window:AddTab({ Title = "Settings", Icon = "" })
+}
+Window:SelectTab(Tabs.Visual)
+
+
+-- Flight Tab
+local FlightToggle = Tabs.Flight:AddToggle("FlightToggle", {
+    Title = "Enable Flight",
+    Default = false
+})
+
+FlightToggle:OnChanged(function(Value)
+    FlyConfig.enabled = Value
+    
+    if Value then
+        if startFlying() then
+            Fluent:Notify({
+                Title = "Flight Enabled",
+                Content = "You're now flying! Use WASD to move.",
+                Duration = 3
+            })
+        else
+            FlyConfig.enabled = false
+            FlightToggle:SetValue(false)
+        end
+    else
+        stopFlying()
+        Fluent:Notify({
+            Title = "Flight Disabled", 
+            Content = "Landing safely...",
+            Duration = 2
+        })
+    end
+end)
+
+local FlightSpeedSlider = Tabs.Flight:AddSlider("FlightSpeed", {
+    Title = "Flight Speed",
+    Description = "Adjust your flight speed",
+    Default = FlyConfig.speed,
+    Min = 25,
+    Max = 1000,
+    Rounding = 0
+})
+
+FlightSpeedSlider:OnChanged(function(Value)
+    FlyConfig.speed = Value
+end)
+
+local BoostSlider = Tabs.Flight:AddSlider("BoostMultiplier", {
+    Title = "Boost Multiplier", 
+    Description = "Speed multiplier when holding Right Ctrl",
+    Default = FlyConfig.boostMultiplier,
+    Min = 1.5,
+    Max = 5,
+    Rounding = 1
+})
+
+BoostSlider:OnChanged(function(Value)
+    FlyConfig.boostMultiplier = Value
+end)
+
+local AutoRotateToggle = Tabs.Flight:AddToggle("AutoRotate", {
+    Title = "Auto Rotate",
+    Description = "Automatically face movement direction",
+    Default = FlyConfig.autoRotate
+})
+
+AutoRotateToggle:OnChanged(function(Value)
+    FlyConfig.autoRotate = Value
+end)
+
+local FlightNoclipToggle = Tabs.Flight:AddToggle("FlightNoclip", {
+    Title = "Flight Noclip",
+    Description = "Enable noclip while flying", 
+    Default = FlyConfig.noclip
+})
+
+FlightNoclipToggle:OnChanged(function(Value)
+    FlyConfig.noclip = Value
+    if FlyConfig.enabled then
+        toggleNoclip(Value)
+    end
+end)
+
+-- Movement Tab
+local WalkSpeedSlider = Tabs.Movement:AddSlider("WalkSpeed", {
+    Title = "Walk Speed",
+    Description = "Adjust your walking speed",
+    Default = MovementConfig.walkSpeed,
+    Min = 0,
+    Max = 500,
+    Rounding = 0
+})
+
+WalkSpeedSlider:OnChanged(function(Value)
+    MovementConfig.walkSpeed = Value
+    updateWalkSpeed(Value)
+end)
+
+local JumpPowerSlider = Tabs.Movement:AddSlider("JumpPower", {
+    Title = "Jump Power",
+    Description = "Adjust your jump strength",
+    Default = MovementConfig.jumpPower,
+    Min = 0,
+    Max = 500,
+    Rounding = 0
+})
+
+JumpPowerSlider:OnChanged(function(Value)
+    MovementConfig.jumpPower = Value
+    updateJumpPower(Value)
+end)
+
+local InfiniteJumpToggle = Tabs.Movement:AddToggle("InfiniteJump", {
+    Title = "Infinite Jump",
+    Description = "Jump unlimited times in mid-air",
+    Default = MovementConfig.infiniteJump
+})
+
+InfiniteJumpToggle:OnChanged(function(Value)
+    MovementConfig.infiniteJump = Value
+    toggleInfiniteJump(Value)
+end)
+
+local JumpBoostToggle = Tabs.Movement:AddToggle("JumpBoost", {
+    Title = "Jump Boost",
+    Description = "Super jump with Right Ctrl + Space",
+    Default = MovementConfig.jumpBoost
+})
+
+JumpBoostToggle:OnChanged(function(Value)
+    MovementConfig.jumpBoost = Value
+end)
+
+local JumpBoostPowerSlider = Tabs.Movement:AddSlider("JumpBoostPower", {
+    Title = "Jump Boost Power",
+    Description = "Strength of the jump boost",
+    Default = MovementConfig.jumpBoostPower,
+    Min = 50,
+    Max = 1000,
+    Rounding = 0
+})
+
+JumpBoostPowerSlider:OnChanged(function(Value)
+    MovementConfig.jumpBoostPower = Value
+end)
+
+local NoclipToggle = Tabs.Movement:AddToggle("Noclip", {
+    Title = "Noclip",
+    Description = "Walk through walls and objects",
+    Default = MovementConfig.noClip
+})
+
+NoclipToggle:OnChanged(function(Value)
+    MovementConfig.noClip = Value
+    toggleNoclip(Value)
+end)
+
+-- Character Tab
+local GodModeToggle = Tabs.Character:AddToggle("GodMode", {
+    Title = "God Mode",
+    Description = "Infinite health and immunity",
+    Default = MiscConfig.godMode
+})
+
+GodModeToggle:OnChanged(function(Value)
+    MiscConfig.godMode = Value
+    toggleGodMode(Value)
+end)
+
+local InvisibilityToggle = Tabs.Character:AddToggle("Invisibility", {
+    Title = "Invisibility",
+    Description = "Make your character invisible",
+    Default = MiscConfig.invisibility
+})
+
+InvisibilityToggle:OnChanged(function(Value)
+    MiscConfig.invisibility = Value
+    toggleInvisibility(Value)
+end)
+
+local FreezeToggle = Tabs.Character:AddToggle("FreezeCharacter", {
+    Title = "Freeze Character",
+    Description = "Lock your character in place",
+    Default = MiscConfig.freezeCharacter
+})
+
+FreezeToggle:OnChanged(function(Value)
+    MiscConfig.freezeCharacter = Value
+    if humanoidRootPart then
+        humanoidRootPart.Anchored = Value
+    end
+end)
+
+Tabs.Character:AddButton({
+    Title = "Reset Character",
+    Description = "Respawn your character",
+    Callback = function()
+        if humanoid then
+            humanoid.Health = 0
+        end
+    end
+})
+
+Tabs.Character:AddButton({
+    Title = "Remove Accessories",
+    Description = "Remove all character accessories",
+    Callback = function()
+        if character then
+            for _, accessory in pairs(character:GetChildren()) do
+                if accessory:IsA("Accessory") then
+                    accessory:Destroy()
+                end
+            end
+            Fluent:Notify({
+                Title = "Accessories Removed",
+                Content = "All accessories have been removed",
+                Duration = 2
+            })
+        end
+    end
+})
+
+-- Visual Tab
+local FullbrightToggle = Tabs.Visual:AddToggle("Fullbright", {
+    Title = "Fullbright",
+    Description = "Light up the entire world",
+    Default = VisualConfig.fullbright
+})
+
+FullbrightToggle:OnChanged(function(Value)
+    VisualConfig.fullbright = Value
+    toggleFullbright(Value)
+end)
+
+-- Chams Toggle (Düzeltildi: artık script başlar başlamaz açılmaz)
+local ChamsToggle = Tabs.Visual:AddToggle("Chams", {
+    Title = "Chams Player",
+    Description = "Adds shine to players",
+    Default = false -- Başlangıçta kapalı
+})
+
+
+
+-- İlk tetiklemeyi engellemek için flag
+local ChamsInitialized = false
+
+ChamsToggle:OnChanged(function(Value)
+    if not ChamsInitialized then
+        ChamsInitialized = true
+        return
+    end
+
+    VisualConfig.Chams = Value
+    toggleChams(Value)
+end)
+
+local threedboxToggle = Tabs.Visual:AddToggle("3D BOX", {
+    Title = "3D BOX Player",
+    Description = "Adds 3D BOX to players",
+    Default = false -- Başlangıçta kapalı
+})
+
+local threedboxInitialized = false
+
+threedboxToggle:OnChanged(function(Value)
+    if not threedboxInitialized then
+        threedboxInitialized = true
+        return
+    end
+
+    VisualConfig.threedbox = Value
+    togglethreedbox(Value)
+end)
+
+local RemoveFogToggle = Tabs.Visual:AddToggle("RemoveFog", {
+    Title = "Remove Fog",
+    Description = "Clear all fog for better visibility",
+    Default = not VisualConfig.fog
+})
+
+RemoveFogToggle:OnChanged(function(Value)
+    VisualConfig.fog = not Value
+    if Value then
+        Lighting.FogEnd = 100000
+        Lighting.FogStart = 0
+    else
+        Lighting.FogEnd = originalValues.FogEnd or 100000
+        Lighting.FogStart = originalValues.FogStart or 0
+    end
+end)
+
+local FOVSlider = Tabs.Visual:AddSlider("FOV", {
+    Title = "Field of View",
+    Description = "Adjust camera field of view",
+    Default = 70,
+    Min = 1,
+    Max = 120,
+    Rounding = 0
+})
+
+FOVSlider:OnChanged(function(Value)
+    local camera = workspace.CurrentCamera
+    if camera then
+        camera.FieldOfView = Value
+    end
+end)
+
+-- Teleport Tab
+local ClickTPToggle = Tabs.Teleport:AddToggle("ClickTP", {
+    Title = "Click Teleport",
+    Description = "Right Ctrl + Click to teleport anywhere",
+    Default = MiscConfig.clickTP
+})
+
+ClickTPToggle:OnChanged(function(Value)
+    MiscConfig.clickTP = Value
+    toggleClickTP(Value)
+end)
+
+Tabs.Teleport:AddButton({
+    Title = "Teleport to Spawn",
+    Description = "Return to the game spawn",
+    Callback = function()
+        if humanoidRootPart then
+            local spawnLocation = workspace:FindFirstChild("SpawnLocation")
+            if spawnLocation then
+                humanoidRootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 5, 0)
+                Fluent:Notify({
+                    Title = "Teleported",
+                    Content = "Returned to spawn location",
+                    Duration = 2
+                })
+            else
+                Fluent:Notify({
+                    Title = "Error",
+                    Content = "Spawn location not found", 
+                    Duration = 2
+                })
+            end
+        end
+    end
+})
+
+-- Settings Tab
+Tabs.Settings:AddParagraph({
+    Title = "Controls Guide",
+    Content = "F - Toggle Flight\nN - Toggle Noclip\nG - Toggle God Mode\n\nFlight Controls:\n• WASD - Move horizontally\n• Space - Move up / Jump\n• Shift - Move down\n• Right Ctrl - Speed boost\n• Right Ctrl + Space - Jump boost\n• Right Ctrl + Click - Teleport"
+})
+
+-- Keybinds
+Tabs.Settings:AddKeybind("FlightKeybind", {
+    Title = "Toggle Flight",
+    Mode = "Toggle",
+    Default = "F",
+    Callback = function()
+        local currentValue = FlightToggle.Value
+        FlightToggle:SetValue(not currentValue)
+    end
+})
+
+Tabs.Settings:AddKeybind("NoclipKeybind", {
+    Title = "Toggle Noclip",
+    Mode = "Toggle", 
+    Default = "N",
+    Callback = function()
+        local currentValue = NoclipToggle.Value
+        NoclipToggle:SetValue(not currentValue)
+    end
+})
+
+Tabs.Settings:AddKeybind("GodModeKeybind", {
+    Title = "Toggle God Mode",
+    Mode = "Toggle",
+    Default = "G", 
+    Callback = function()
+        local currentValue = GodModeToggle.Value
+        GodModeToggle:SetValue(not currentValue)
+    end
+})
+
+-- Input Handling
+local function onInputBegan(input, gameProcessed)
+    if gameProcessed then return end
+    
+    local keyCode = input.KeyCode
+    if keyCode == Enum.KeyCode.W then inputState.W = true
+    elseif keyCode == Enum.KeyCode.A then inputState.A = true
+    elseif keyCode == Enum.KeyCode.S then inputState.S = true
+    elseif keyCode == Enum.KeyCode.D then inputState.D = true
+    elseif keyCode == Enum.KeyCode.Space then 
+        inputState.Space = true
+        -- Jump boost
+        if MovementConfig.jumpBoost and inputState.RightControl and humanoidRootPart and not FlyConfig.enabled then
+            local bodyVel = Instance.new("BodyVelocity")
+            bodyVel.MaxForce = Vector3.new(0, math.huge, 0)
+            bodyVel.Velocity = Vector3.new(0, MovementConfig.jumpBoostPower, 0)
+            bodyVel.Parent = humanoidRootPart
+            
+            game:GetService("Debris"):AddItem(bodyVel, 0.5)
+        end
+    elseif keyCode == Enum.KeyCode.LeftShift then inputState.LeftShift = true
+    elseif keyCode == Enum.KeyCode.RightControl then inputState.RightControl = true
+    end
+end
+
+local function onInputEnded(input)
+    local keyCode = input.KeyCode
+    if keyCode == Enum.KeyCode.W then inputState.W = false
+    elseif keyCode == Enum.KeyCode.A then inputState.A = false
+    elseif keyCode == Enum.KeyCode.S then inputState.S = false
+    elseif keyCode == Enum.KeyCode.D then inputState.D = false
+    elseif keyCode == Enum.KeyCode.Space then inputState.Space = false
+    elseif keyCode == Enum.KeyCode.LeftShift then inputState.LeftShift = false
+    elseif keyCode == Enum.KeyCode.RightControl then inputState.RightControl = false
+    end
+end
+
+connections.inputBegan = UIS.InputBegan:Connect(onInputBegan)
+connections.inputEnded = UIS.InputEnded:Connect(onInputEnded)
+
+-- Main Flight Loop
+connections.renderStepped = RunService.RenderStepped:Connect(function(deltaTime)
+    if not FlyConfig.enabled or not bodyVelocity or not bodyGyro then return end
+    
+    if not getCharacterComponents() then
+        FlyConfig.enabled = false
+        FlightToggle:SetValue(false)
+        return
+    end
+    
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+    
+    local moveVector = Vector3.new()
+    
+    if inputState.W then moveVector += camera.CFrame.LookVector end
+    if inputState.S then moveVector -= camera.CFrame.LookVector end
+    if inputState.A then moveVector -= camera.CFrame.RightVector end
+    if inputState.D then moveVector += camera.CFrame.RightVector end
+    if inputState.Space then moveVector += Vector3.new(0, 1, 0) end
+    if inputState.LeftShift then moveVector += Vector3.new(0, -1, 0) end
+    
+    local currentSpeed = FlyConfig.speed
+    if inputState.RightControl then
+        currentSpeed *= FlyConfig.boostMultiplier
+    end
+    
+    if moveVector.Magnitude > 0 then
+        targetVelocity = moveVector.Unit * currentSpeed
+    else
+        targetVelocity = Vector3.new()
+    end
+    
+    currentVelocity = currentVelocity:Lerp(targetVelocity, FlyConfig.smoothness)
+    bodyVelocity.Velocity = currentVelocity
+    
+    if FlyConfig.autoRotate and moveVector.Magnitude > 0 then
+        local lookDirection = (humanoidRootPart.Position + moveVector.Unit).Unit
+        bodyGyro.CFrame = CFrame.lookAt(humanoidRootPart.Position, humanoidRootPart.Position + lookDirection)
+    else
+        bodyGyro.CFrame = camera.CFrame
+    end
+end)
+
+-- Character respawn handling
+connections.characterAdded = player.CharacterAdded:Connect(function(newCharacter)
+    wait(1)
+    
+    -- Reset fly state
+    FlyConfig.enabled = false
+    destroyFlyComponents()
+    
+    -- Get new character components
+    character = newCharacter
+    humanoid = character:WaitForChild("Humanoid")
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    
+    -- Save original values for new character
+    saveOriginalValues()
+    
+    -- Reapply settings
+    updateWalkSpeed(MovementConfig.walkSpeed)
+    updateJumpPower(MovementConfig.jumpPower)
+    toggleInfiniteJump(MovementConfig.infiniteJump)
+    toggleGodMode(MiscConfig.godMode)
+    
+    -- Reset UI
+    FlightToggle:SetValue(false)
+end)
+
+-- Initialize on first load
+if getCharacterComponents() then
+    saveOriginalValues()
+end
+
+-- Cleanup function
+local function cleanup()
+    for _, connection in pairs(connections) do
+        if connection then
+            connection:Disconnect()
+        end
+    end
+    
+    stopFlying()
+    toggleNoclip(false)
+    toggleGodMode(false)
+    toggleInvisibility(false)
+    toggleFullbright(false)
+	toggleChams(false)
+	togglethreedbox(false)
+    toggleInfiniteJump(false)
+    
+    if humanoid then
+        humanoid.WalkSpeed = originalValues.WalkSpeed or 16
+        humanoid.JumpPower = originalValues.JumpPower or 50
+    end
+end
+
+-- Handle script cleanup
+game.Players.PlayerRemoving:Connect(function(plr)
+    if plr == player then
+        cleanup()
+    end
+end)
+
+-- Setup Save Manager if available
+pcall(function()
+    SaveManager:SetLibrary(Fluent)
+    SaveManager:IgnoreThemeSettings()
+    SaveManager:SetIgnoreIndexes({})
+    SaveManager:SetFolder("FluentScriptHub/UltimateAdmin")
+    SaveManager:BuildConfigSection(Tabs.Settings)
+    SaveManager:LoadAutoloadConfig()
+end)
+
+-- Setup Interface Manager if available
+pcall(function()
+    InterfaceManager:SetLibrary(Fluent)
+    InterfaceManager:SetFolder("FluentScriptHub")
+    InterfaceManager:BuildInterfaceSection(Tabs.Settings)
+end)
+
+-- Initial notification
+Fluent:Notify({
+    Title = "Wind Force Client Sucsessfully Loaded",
+    Duration = 5
+})
+
+return cleanup
